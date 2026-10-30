@@ -24,9 +24,16 @@ SORTS = {
 }
 
 
-def _fts_query(q: str) -> str:
-    """Turn user text into a safe FTS5 prefix query."""
+def _fts_query(q: str) -> Optional[str]:
+    """Turn user text into a safe FTS5 prefix query.
+
+    Returns None when the input has no searchable characters (e.g. only
+    punctuation, whitespace, or FTS stopwords), so callers can skip the
+    MATCH clause entirely instead of sending an empty string to SQLite.
+    """
     terms = [t for t in "".join(c if c.isalnum() or c.isspace() else " " for c in q).split() if t]
+    if not terms:
+        return None
     return " ".join(f'"{t}"*' for t in terms)
 
 
@@ -52,10 +59,11 @@ def search(
     params: list = [status]
     join = ""
 
-    if q.strip():
+    fts_q = _fts_query(q)
+    if fts_q is not None:
         join += " JOIN asset_fts f ON f.rowid = a.id"
         where.append("asset_fts MATCH ?")
-        params.append(_fts_query(q))
+        params.append(fts_q)
     if media_type:
         where.append("a.media_type = ?")
         params.append(media_type)
@@ -68,7 +76,7 @@ def search(
         params.append(collection_id)
 
     where_sql = " AND ".join(where)
-    order = "bm25(asset_fts)" if q.strip() else SORTS.get(sort, SORTS["newest"])
+    order = "bm25(asset_fts)" if fts_q is not None else SORTS.get(sort, SORTS["newest"])
 
     total = conn.execute(
         f"SELECT COUNT(*) AS c FROM assets a{join} WHERE {where_sql}", params
