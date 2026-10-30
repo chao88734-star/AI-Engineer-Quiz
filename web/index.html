@@ -31,10 +31,6 @@
       </div>
       <div class="search-box">
         <input id="search" placeholder="Search assets, tags, metadata...">
-        <select id="search-mode" title="Search mode">
-          <option value="keyword">Keyword</option>
-          <option value="semantic">Semantic</option>
-        </select>
       </div>
       <div class="topbar-right">
         <button id="btn-upload" class="btn btn-primary">Upload</button>
@@ -72,17 +68,54 @@
           <div class="view-head">
             <h2 id="result-title">Library</h2>
             <div class="view-controls">
-              <span id="active-filter" class="chip hidden"></span>
               <select id="sort">
                 <option value="newest">Newest</option>
                 <option value="oldest">Oldest</option>
                 <option value="name">Name</option>
                 <option value="largest">Largest</option>
               </select>
+              <button id="btn-export" class="btn btn-ghost">Export CSV</button>
             </div>
           </div>
+
+          <!-- Filter bar -->
+          <div class="filter-bar">
+            <div class="filter-row">
+              <label>Collection
+                <select id="f-collection">
+                  <option value="">Any</option>
+                </select>
+              </label>
+              <label>Media type
+                <select id="f-media">
+                  <option value="">Any</option>
+                  <option value="image">Image</option>
+                  <option value="video">Video</option>
+                  <option value="audio">Audio</option>
+                  <option value="document">Document</option>
+                  <option value="other">Other</option>
+                </select>
+              </label>
+              <label>Include tags
+                <input id="f-tags" placeholder="Type tag + Enter" list="f-tag-suggestions">
+                <datalist id="f-tag-suggestions"></datalist>
+              </label>
+              <label>Exclude tags
+                <input id="f-exclude" placeholder="Type tag + Enter" list="f-tag-suggestions2">
+                <datalist id="f-tag-suggestions2"></datalist>
+              </label>
+              <button id="f-clear" class="btn btn-ghost btn-clear">Clear all</button>
+            </div>
+            <div id="active-chips" class="active-chips hidden"></div>
+          </div>
+
           <div id="grid" class="grid"></div>
-          <div id="empty" class="empty hidden">No assets yet. Click Upload to get started.</div>
+          <div id="empty" class="empty hidden">No assets match your filters.</div>
+          <div class="pager hidden" id="pager">
+            <button id="p-prev" class="btn btn-ghost">&larr; Prev</button>
+            <span class="p-info" id="p-info"></span>
+            <button id="p-next" class="btn btn-ghost">Next &rarr;</button>
+          </div>
         </div>
 
         <div id="view-collections" class="view hidden">

@@ -1,8 +1,19 @@
 /* Keepstack single-page client. Vanilla JS, no build step. */
 const $ = (s, r = document) => r.querySelector(s);
 const $$ = (s, r = document) => [...r.querySelectorAll(s)];
-const state = { token: localStorage.getItem("keepstack_token"), user: null,
-  q: "", mode: "keyword", media: null, tag: null, sort: "newest", collection: null };
+const state = {
+  token: localStorage.getItem("keepstack_token"),
+  user: null,
+  q: "",
+  media: null,          // media_type filter (string or null)
+  tags: [],             // include tags array
+  exclude_tags: [],     // exclude tags array
+  collection: null,     // collection_id or null
+  sort: "newest",
+  page: 1,
+  pageSize: 24,
+  reqSeq: 0,            // request sequence for stale-response protection
+};
 
 // ---------- API helper ----------
 async function api(path, opts = {}) {
@@ -40,6 +51,7 @@ function enterApp() {
   $("#user-label").textContent = `${state.user.username} (${state.user.role})`;
   const isAdmin = state.user.role === "admin";
   $$(".admin-only").forEach(el => el.classList.toggle("hidden", !isAdmin));
+  bindFilterBar();
   loadLibrary();
 }
 
@@ -56,29 +68,152 @@ $$(".nav-item").forEach(btn => btn.addEventListener("click", () => {
   if (view === "audit") loadAudit();
 }));
 
-// ---------- library / search ----------
-let searchTimer;
-$("#search").addEventListener("input", (e) => { state.q = e.target.value; clearTimeout(searchTimer); searchTimer = setTimeout(loadLibrary, 250); });
-$("#search-mode").addEventListener("change", (e) => { state.mode = e.target.value; loadLibrary(); });
-$("#sort").addEventListener("change", (e) => { state.sort = e.target.value; loadLibrary(); });
-$("#active-filter").addEventListener("click", () => { state.media = null; state.tag = null; state.collection = null; loadLibrary(); });
+// ---------- filter bar bindings ----------
+function bindFilterBar() {
+  // Sort
+  $("#sort").addEventListener("change", (e) => { state.sort = e.target.value; state.page = 1; loadLibrary(); });
+  // Search box (debounced)
+  let searchTimer;
+  $("#search").addEventListener("input", (e) => {
+    state.q = e.target.value; clearTimeout(searchTimer);
+    searchTimer = setTimeout(() => { state.page = 1; loadLibrary(); }, 250);
+  });
+  // Collection dropdown
+  const fCol = $("#f-collection");
+  loadCollectionsIntoFilter();
+  fCol.addEventListener("change", () => { state.collection = fCol.value ? parseInt(fCol.value,10) : null; state.page = 1; loadLibrary(); });
+  // Media type dropdown
+  $("#f-media").addEventListener("change", (e) => { state.media = e.target.value || null; state.page = 1; loadLibrary(); });
+  // Include tags: Enter to add, comma too
+  const fTags = $("#f-tags");
+  fTags.addEventListener("keydown", (e) => {
+    if (e.key === "Enter" || e.key === "," || (e.key === "Tab" && fTags.value.trim())) {
+      e.preventDefault();
+      addIncludeTag(fTags.value.trim().replace(/,$/, ""));
+      fTags.value = "";
+    }
+  });
+  // Exclude tags
+  const fExclude = $("#f-exclude");
+  fExclude.addEventListener("keydown", (e) => {
+    if (e.key === "Enter" || e.key === "," || (e.key === "Tab" && fExclude.value.trim())) {
+      e.preventDefault();
+      addExcludeTag(fExclude.value.trim().replace(/,$/, ""));
+      fExclude.value = "";
+    }
+  });
+  // Clear all
+  $("#f-clear").addEventListener("click", () => {
+    state.q = ""; state.media = null; state.tags = []; state.exclude_tags = [];
+    state.collection = null; state.page = 1; state.sort = "newest";
+    $("#search").value = ""; $("#sort").value = "newest";
+    $("#f-media").value = ""; $("#f-collection").value = "";
+    $("#f-tags").value = ""; $("#f-exclude").value = "";
+    loadLibrary();
+  });
+  // Export CSV
+  $("#btn-export").addEventListener("click", exportCSV);
+  // Pager
+  $("#p-prev").addEventListener("click", () => { if (state.page > 1) { state.page--; loadLibrary(); } });
+  $("#p-next").addEventListener("click", () => { state.page++; loadLibrary(); });
+}
 
+async function loadCollectionsIntoFilter() {
+  try {
+    const d = await api("/api/collections");
+    const sel = $("#f-collection");
+    sel.innerHTML = '<option value="">Any</option>' + (d.collections || []).map(c =>
+      `<option value="${c.id}">${esc(c.name)}</option>`).join("");
+  } catch {}
+}
+
+function addIncludeTag(t) {
+  if (!t) return;
+  const low = t.toLowerCase();
+  if (state.exclude_tags.includes(low)) { toast(`Tag "${low}" is already in exclude`, "err"); return; }
+  if (state.tags.includes(low)) return;
+  state.tags.push(low);
+  state.page = 1;
+  loadLibrary();
+}
+function addExcludeTag(t) {
+  if (!t) return;
+  const low = t.toLowerCase();
+  if (state.tags.includes(low)) { toast(`Tag "${low}" is already in include`, "err"); return; }
+  if (state.exclude_tags.includes(low)) return;
+  state.exclude_tags.push(low);
+  state.page = 1;
+  loadLibrary();
+}
+function removeIncludeTag(t) { state.tags = state.tags.filter(x => x !== t); state.page = 1; loadLibrary(); }
+function removeExcludeTag(t) { state.exclude_tags = state.exclude_tags.filter(x => x !== t); state.page = 1; loadLibrary(); }
+
+function renderActiveChips() {
+  const chips = [];
+  if (state.q) chips.push(`<span class="chip">keyword "${esc(state.q)}"</span>`);
+  if (state.collection) {
+    const sel = $("#f-collection");
+    const opt = sel.querySelector(`option[value="${state.collection}"]`);
+    chips.push(`<span class="chip">collection: ${esc(opt?.text || state.collection)}</span>`);
+  }
+  if (state.media) chips.push(`<span class="chip">${esc(state.media)}</span>`);
+  state.tags.forEach(t => chips.push(`<span class="chip inc">+${esc(t)} <span class="x" data-rm-include="${esc(t)}">&times;</span></span>`));
+  state.exclude_tags.forEach(t => chips.push(`<span class="chip exc">&minus;${esc(t)} <span class="x" data-rm-exclude="${esc(t)}">&times;</span></span>`));
+  const box = $("#active-chips");
+  if (chips.length === 0) { box.classList.add("hidden"); box.innerHTML = ""; return; }
+  box.classList.remove("hidden");
+  box.innerHTML = chips.join("");
+  $$("[data-rm-include]").forEach(el => el.addEventListener("click", () => removeIncludeTag(el.dataset.rmInclude)));
+  $$("[data-rm-exclude]").forEach(el => el.addEventListener("click", () => removeExcludeTag(el.dataset.rmExclude)));
+}
+
+// ---------- library / search ----------
 async function loadLibrary() {
-  const p = new URLSearchParams({ q: state.q, sort: state.sort, mode: state.mode, limit: "120" });
+  const mySeq = ++state.reqSeq;
+  const p = new URLSearchParams({
+    q: state.q,
+    sort: state.sort,
+    limit: String(state.pageSize),
+    offset: String((state.page - 1) * state.pageSize),
+  });
   if (state.media) p.set("media_type", state.media);
-  if (state.tag) p.set("tag", state.tag);
+  state.tags.forEach(t => p.append("tags", t));
+  state.exclude_tags.forEach(t => p.append("exclude_tags", t));
   if (state.collection) p.set("collection_id", state.collection);
-  const data = await api("/api/assets?" + p.toString());
+
+  let data;
+  try {
+    data = await api("/api/assets?" + p.toString());
+  } catch (err) {
+    if (err.message === "unauthorised") return;
+    toast("Load failed: " + (err.message || "unknown"), "err");
+    $("#grid").innerHTML = "";
+    $("#empty").classList.remove("hidden");
+    $("#empty").textContent = "Load failed. Please refresh.";
+    $("#pager").classList.add("hidden");
+    return;
+  }
+
+  // Stale-response guard
+  if (mySeq !== state.reqSeq) return;
+
   renderFacets(data.facets);
   renderGrid(data.items, data.total);
-  const filt = state.media || (state.tag ? "#" + state.tag : null) || (state.collection ? "collection" : null);
-  $("#active-filter").classList.toggle("hidden", !filt);
-  if (filt) $("#active-filter").textContent = filt;
+  renderActiveChips();
+  renderPager(data.total);
+
+  // Update tag suggestions
+  const allTags = (data.facets?.tags || []).map(t => t.value);
+  $("#f-tag-suggestions").innerHTML = allTags.map(t => `<option value="${esc(t)}">`).join("");
+  $("#f-tag-suggestions2").innerHTML = allTags.map(t => `<option value="${esc(t)}">`).join("");
 }
 
 function renderGrid(items, total) {
   $("#result-title").textContent = state.q ? `Results (${total})` : `Library (${total})`;
   $("#empty").classList.toggle("hidden", items.length > 0);
+  if (items.length === 0) {
+    $("#empty").textContent = total === 0 ? "No assets match your filters." : "Loading...";
+  }
   $("#grid").innerHTML = items.map(a => `
     <div class="card" data-uuid="${a.uuid}">
       <img class="thumb" loading="lazy" src="/api/assets/${a.uuid}/thumb" alt="${esc(a.alt_text || a.title)}">
@@ -90,13 +225,69 @@ function renderGrid(items, total) {
   $$("#grid .card").forEach(c => c.addEventListener("click", () => openAsset(c.dataset.uuid)));
 }
 
+function renderPager(total) {
+  const totalPages = Math.max(1, Math.ceil(total / state.pageSize));
+  const pager = $("#pager");
+  if (totalPages <= 1) { pager.classList.add("hidden"); return; }
+  pager.classList.remove("hidden");
+  $("#p-prev").disabled = state.page <= 1;
+  $("#p-next").disabled = state.page >= totalPages;
+  $("#p-info").textContent = `Page ${state.page} / ${totalPages} · ${total} total`;
+}
+
 function renderFacets(facets) {
   $("#facet-media").innerHTML = (facets.media_types || []).map(m =>
     `<li class="${state.media===m.value?'active':''}" data-media="${m.value}"><span>${m.value}</span><span class="count">${m.count}</span></li>`).join("");
-  $("#facet-tags").innerHTML = (facets.tags || []).slice(0, 18).map(t =>
-    `<li class="${state.tag===t.value?'active':''}" data-tag="${esc(t.value)}"><span>${esc(t.value)}</span><span class="count">${t.count}</span></li>`).join("");
-  $$("#facet-media li").forEach(li => li.addEventListener("click", () => { state.media = state.media===li.dataset.media?null:li.dataset.media; loadLibrary(); }));
-  $$("#facet-tags li").forEach(li => li.addEventListener("click", () => { state.tag = state.tag===li.dataset.tag?null:li.dataset.tag; loadLibrary(); }));
+  $("#facet-tags").innerHTML = (facets.tags || []).slice(0, 18).map(t => {
+    const inInc = state.tags.includes(t.value);
+    const inExc = state.exclude_tags.includes(t.value);
+    let cls = "";
+    if (inInc) cls = "active";
+    else if (inExc) cls = "exc";
+    return `<li class="${cls}" data-tag="${esc(t.value)}"><span>${esc(t.value)}</span><span class="count">${t.count}</span></li>`;
+  }).join("");
+  $$("#facet-media li").forEach(li => li.addEventListener("click", () => {
+    state.media = state.media===li.dataset.media ? null : li.dataset.media;
+    state.page = 1; loadLibrary();
+  }));
+  $$("#facet-tags li").forEach(li => li.addEventListener("click", () => {
+    const t = li.dataset.tag;
+    if (state.tags.includes(t)) {
+      removeIncludeTag(t);
+    } else if (state.exclude_tags.includes(t)) {
+      removeExcludeTag(t);
+    } else {
+      addIncludeTag(t);
+    }
+  }));
+}
+
+// ---------- Export CSV ----------
+async function exportCSV() {
+  const p = new URLSearchParams({ q: state.q, sort: state.sort });
+  if (state.media) p.set("media_type", state.media);
+  state.tags.forEach(t => p.append("tags", t));
+  state.exclude_tags.forEach(t => p.append("exclude_tags", t));
+  if (state.collection) p.set("collection_id", state.collection);
+
+  try {
+    const headers = state.token ? { "Authorization": "Bearer " + state.token } : {};
+    const res = await fetch("/api/assets/export.csv?" + p.toString(), { headers });
+    if (res.status === 401) { toast("Export failed: not authenticated", "err"); return; }
+    if (!res.ok) { toast("Export failed: " + res.status, "err"); return; }
+    const blob = await res.blob();
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    const disp = res.headers.get("content-disposition") || "";
+    const m = disp.match(/filename="?([^";]+)"?/);
+    a.download = m ? m[1] : "keepstack-assets.csv";
+    document.body.appendChild(a); a.click(); document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+    toast("Export complete");
+  } catch (err) {
+    toast("Export failed", "err");
+  }
 }
 
 // ---------- asset detail drawer ----------
@@ -228,7 +419,11 @@ async function loadCollections() {
     `<div class="collection-card" data-id="${c.id}"><span class="n">${esc(c.name)}</span><span class="muted">${c.asset_count} assets</span><span class="muted">${esc(c.description||"")}</span></div>`).join("")
     || '<p class="muted">No collections yet.</p>';
   $$("#collection-list .collection-card").forEach(card => card.addEventListener("click", () => {
-    state.collection = card.dataset.id; state.media = null; state.tag = null;
+    state.collection = parseInt(card.dataset.id,10);
+    state.media = null; state.tags = []; state.exclude_tags = []; state.page = 1;
+    $("#f-collection").value = state.collection;
+    $("#f-media").value = "";
+    $("#f-tags").value = ""; $("#f-exclude").value = "";
     $$(".nav-item").forEach(b => b.classList.remove("active"));
     $('.nav-item[data-view="library"]').classList.add("active");
     $$(".view").forEach(v => v.classList.add("hidden")); $("#view-library").classList.remove("hidden");
@@ -237,7 +432,7 @@ async function loadCollections() {
 }
 $("#btn-new-collection").addEventListener("click", async () => {
   const name = prompt("Collection name"); if (!name) return;
-  await api("/api/collections", { json: { name } }); loadCollections();
+  await api("/api/collections", { json: { name } }); loadCollections(); loadCollectionsIntoFilter();
 });
 
 // ---------- dashboard ----------
