@@ -37,11 +37,27 @@ def _fts_query(q: str) -> Optional[str]:
     return " ".join(f'"{t}"*' for t in terms)
 
 
+def _normalize_tags(raw_tags: Optional[list[str]]) -> list[str]:
+    """Strip, lowercase, dedupe, and drop empty strings from a tag list."""
+    if not raw_tags:
+        return []
+    seen: set[str] = set()
+    out: list[str] = []
+    for t in raw_tags:
+        t2 = (t or "").strip().lower()
+        if t2 and t2 not in seen:
+            seen.add(t2)
+            out.append(t2)
+    return out
+
+
 def search(
     *,
     q: str = "",
     media_type: Optional[str] = None,
-    tag: Optional[str] = None,
+    tag: Optional[str] = None,          # deprecated, use tags
+    tags: Optional[list[str]] = None,   # include: AND semantics
+    exclude_tags: Optional[list[str]] = None,  # exclude: any hit = excluded
     collection_id: Optional[int] = None,
     status: str = "active",
     sort: str = "newest",
@@ -55,6 +71,19 @@ def search(
     if mode == "semantic" and q.strip():
         return _semantic_search(q, media_type, status, limit, offset)
 
+    # Normalise tag inputs; reconcile old single `tag` with new `tags` list.
+    include = _normalize_tags(tags)
+    if tag:
+        tl = tag.strip().lower()
+        if tl and tl not in include:
+            include.append(tl)
+    exclude = _normalize_tags(exclude_tags)
+
+    # Short-circuit: same tag on both sides -> empty result set.
+    overlap = set(include) & set(exclude)
+    if overlap:
+        return {"total": 0, "items": [], "facets": _facets(status), "mode": mode}
+
     where = ["a.status = ?"]
     params: list = [status]
     join = ""
@@ -67,10 +96,25 @@ def search(
     if media_type:
         where.append("a.media_type = ?")
         params.append(media_type)
-    if tag:
-        join += (" JOIN asset_tags at ON at.asset_id = a.id"
-                 " JOIN tags t ON t.id = at.tag_id AND t.name = ?")
-        params.append(tag.lower())
+
+    # Include tags: AND semantics via EXISTS subquery per tag.
+    for tname in include:
+        where.append(
+            "EXISTS (SELECT 1 FROM asset_tags at"
+            " JOIN tags t ON t.id = at.tag_id"
+            " WHERE at.asset_id = a.id AND t.name = ?)"
+        )
+        params.append(tname)
+
+    # Exclude tags: any hit excludes the asset (NOT EXISTS each).
+    for tname in exclude:
+        where.append(
+            "NOT EXISTS (SELECT 1 FROM asset_tags at"
+            " JOIN tags t ON t.id = at.tag_id"
+            " WHERE at.asset_id = a.id AND t.name = ?)"
+        )
+        params.append(tname)
+
     if collection_id:
         join += " JOIN collection_assets ca ON ca.asset_id = a.id AND ca.collection_id = ?"
         params.append(collection_id)
