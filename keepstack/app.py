@@ -6,9 +6,11 @@ single-page web client is served from the ``web/`` directory at the root.
 """
 from __future__ import annotations
 
+import csv
 import io
 import ipaddress
 import json
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
@@ -190,6 +192,38 @@ def list_assets(
     return search.search(q=q, media_type=media_type, tag=tag, tags=tags,
                          exclude_tags=exclude_tags, collection_id=collection_id,
                          status="active", sort=sort, mode=mode, limit=limit, offset=offset)
+
+
+@app.get("/api/assets/export.csv")
+def export_assets_csv(
+    q: str = "",
+    media_type: Optional[str] = None,
+    tag: Optional[str] = None,
+    tags: list[str] = Query(default=[]),
+    exclude_tags: list[str] = Query(default=[]),
+    collection_id: Optional[int] = None,
+    sort: str = "newest",
+    user: dict = Depends(require_user),
+):
+    rows = search.export_assets_data(
+        q=q, media_type=media_type, tag=tag, tags=tags,
+        exclude_tags=exclude_tags, collection_id=collection_id,
+        status="active", sort=sort,
+    )
+    buf = io.StringIO()
+    writer = csv.writer(buf)
+    writer.writerow(["uuid", "title", "description", "filename",
+                     "media_type", "tags", "created_at"])
+    for r in rows:
+        writer.writerow([r["uuid"], r["title"], r["description"], r["filename"],
+                         r["media_type"], r["tags"], r["created_at"]])
+    ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    filename = f"keepstack-assets-{ts}.csv"
+    return Response(
+        content=buf.getvalue().encode("utf-8-sig"),
+        media_type="text/csv; charset=utf-8",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
 
 
 def _get_asset_or_404(uuid: str) -> dict:
