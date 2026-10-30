@@ -106,7 +106,8 @@ def _build_where_join_order(
         params.append(tname)
 
     if collection_id:
-        join += " JOIN collection_assets ca ON ca.asset_id = a.id AND ca.collection_id = ?"
+        join += " JOIN collection_assets ca ON ca.asset_id = a.id"
+        where.append("ca.collection_id = ?")
         params.append(collection_id)
 
     where_sql = " AND ".join(where)
