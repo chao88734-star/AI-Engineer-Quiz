@@ -17,10 +17,10 @@ from . import ai
 from .db import get_conn
 
 SORTS = {
-    "newest": "a.created_at DESC",
-    "oldest": "a.created_at ASC",
-    "name": "a.title ASC",
-    "largest": "a.size DESC",
+    "newest": "a.created_at DESC, a.id DESC",
+    "oldest": "a.created_at ASC, a.id ASC",
+    "name": "a.title ASC, a.id ASC",
+    "largest": "a.size DESC, a.id DESC",
 }
 
 
@@ -120,7 +120,7 @@ def search(
         params.append(collection_id)
 
     where_sql = " AND ".join(where)
-    order = "bm25(asset_fts)" if fts_q is not None else SORTS.get(sort, SORTS["newest"])
+    order = SORTS.get(sort, SORTS["newest"])
 
     total = conn.execute(
         f"SELECT COUNT(*) AS c FROM assets a{join} WHERE {where_sql}", params
