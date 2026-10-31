@@ -2,7 +2,7 @@
 
 - **Fork**: https://github.com/chao88734-star/AI-Engineer-Quiz
 - **Branch**: `assignment/chao88734-star`
-- **Final commit SHA**: `97e402571a37b29065ff22a11793d5e2ade4d129`
+- **Final commit SHA**: 随最终交付信息提供（以该分支远端 HEAD 为准）
 - **Based on upstream**: `3aa137ccde6f981981582f6f71b81448c72a9dab` (2026-10-29)
 
 ---
@@ -15,11 +15,11 @@ cd AI-Engineer-Quiz-main
 pip install -r requirements.txt
 ```
 
-### 运行全部测试（含原有 22 + 新增 12）
+### 运行全部测试（含原有 22 + 新增 13）
 ```bash
 python -m pytest -v
 ```
-预期输出：`34 passed, 2 skipped`（2 个 skip 是本地 CLIP 和 OCR 模型——原仓库就有，非本次改动）
+预期输出：`35 passed, 2 skipped`（2 个 skip 是本地 CLIP 和 OCR 模型——原仓库就有，非本次改动）
 
 ### 启动服务器 + seed 演示数据
 ```bash
@@ -58,9 +58,9 @@ curl -H "Authorization: Bearer $TOKEN" \
 | 分组 | 数量 | 说明 |
 |---|---|---|
 | 原仓库 `test_core.py` | 22 passed + 2 skipped | 无回归 |
-| 新增 `test_quiz_requirements.py` | **12 passed** | 覆盖题目全部验收点 |
+| 新增 `test_quiz_requirements.py` | **13 passed** | 覆盖题目全部验收点 |
 
-12 个新增测试覆盖：
+13 个新增测试覆盖：
 
 | 测试 | 断言 |
 |---|---|
@@ -75,18 +75,25 @@ curl -H "Authorization: Bearer $TOKEN" \
 | 未登录导出 | 401 |
 | 非法 limit/offset | 422 |
 | 特殊字符不 500 | `!!!`, `"*`, 纯空白, emoji, `AND OR` → 200 |
-| 修改后查询 | PATCH 改 title → 重新 query + export 都反映新标题 |
+| 修改后查询 | PATCH 改 title，再增/删 tag → 重新 query + export 都反映最新状态 |
+| 大库导出 | 1,200 条匹配素材导出成功（超过 SQLite 999 变量上限，验证分块查询） |
 
-### 手动验证
+### 验证记录（手动 + 代码检查）
 - 特殊字符查询 `q=!!!` 不再 500（修复前实测复现了 `fts5: syntax error near ""`）
 - `status=deleted` 无法绕过（接口已移除 status 参数，固定传 `active`）
-- 前端请求竞态：快速切换 include/exclude → 最终响应对应最新条件（reqSeq 丢弃过期响应）
+- 前端请求竞态：快速切换 include/exclude → 最终响应对应最新条件（成功与失败的过期响应都被丢弃）
+- 同一标签同时加入 include 和 exclude → 页面允许输入，结果为空（与后端一致）
+- 退出后重新登录 → 筛选栏事件只绑定一次，一次点击只发一个请求
+- 在详情抽屉增/删标签 → 列表立即刷新，列表与导出保持一致
 
 ---
 
-## 三、提交拆分（11 个 commit，无 squash/amend/rebase）
+## 三、提交拆分（最终 10 个 commit，无 squash/amend/rebase）
 
 ```
+(本提交) docs: update submission verification
+bf797f9 fix: complete filtering export and mutation requirements
+905ae79 docs: SUBMISSION.md — 运行验证、实测结果、取舍与限制
 97e4025 fix(search): collection_id JOIN ON 参数顺序 bug + 新增 12 个需求测试
 651b2e3 feat(web): 组合筛选栏 + 生效条件 chips + 分页 + 导出按钮
 f04af8d feat(api): /api/assets/export.csv 全量导出
@@ -96,7 +103,7 @@ f4412c0 feat(search): 多标签包含/排除组合筛选
 10906d3 fix(search): 纯标点/空白关键词按无关键词处理
 ```
 
-> 最后一个 commit 额外修了一个开发中发现的 **SQL 参数绑定顺序 bug**（`JOIN ON` 里的 `?` 先于 `WHERE` 出现，但 params 列表顺序反了，导致 collection_id 查询返回 0）。这是在跑 pytest 时发现的，修后 collection 相关测试全部通过。
+> `97e4025` 这个 commit 额外修了一个开发中发现的 **SQL 参数绑定顺序 bug**（`JOIN ON` 里的 `?` 先于 `WHERE` 出现，但 params 列表顺序反了，导致 collection_id 查询返回 0）。这是在跑 pytest 时发现的，修后 collection 相关测试全部通过。
 
 ---
 
@@ -128,7 +135,7 @@ f4412c0 feat(search): 多标签包含/排除组合筛选
 
 | 项目 | 说明 |
 |---|---|
-| **大库导出** | 导出一次性加载全部匹配行到内存，`export_assets_data()` 用全量 SELECT。本地 SQLite OK，百万级素材需改为流式分批（`yield` + `csv.writerow`） |
+| **大库导出** | 导出一次性加载全部匹配行到内存，`export_assets_data()` 用全量 SELECT。本地 SQLite OK，百万级素材需改为流式分批（`yield` + `csv.writerow`）。标签批量查询已按 500 个 ID 分块，不会触发 SQLite 绑定变量上限 |
 | **facets 不联动当前筛选** | 左侧 facets 显示全局 Top tags / Media type 计数，不是"当前筛选下的 Top N"。题目允许，但用户可能误解 |
 | **无跨请求快照** | 题目明确"不要求跨请求快照"。分页过程中若被删/被加，翻页可能出现重复或遗漏 |
 | **标签搜索建议是 facets 全集** | datalist 建议来自 facets，不是"输入前缀匹配"。用起来够用但不精细 |
