@@ -191,21 +191,26 @@ def export_assets_data(
         params,
     ).fetchall()
 
-    # Batch-fetch tags for each asset to avoid N+1.
+    # Batch-fetch tags for each asset to avoid N+1. Chunk the id list so the
+    # IN (...) never exceeds SQLite's bound-variable limit (999 on older
+    # builds, 32,766 on newer ones) even for very large exports.
     if not rows:
         return []
     asset_ids = [r["id"] for r in rows]
-    placeholders = ",".join("?" * len(asset_ids))
-    tag_rows = conn.execute(
-        f"""SELECT at.asset_id, t.name FROM asset_tags at
-            JOIN tags t ON t.id = at.tag_id
-            WHERE at.asset_id IN ({placeholders})
-            ORDER BY t.name""",
-        asset_ids,
-    ).fetchall()
     by_id: dict[int, list[str]] = {}
-    for tr in tag_rows:
-        by_id.setdefault(tr["asset_id"], []).append(tr["name"])
+    chunk_size = 500
+    for start in range(0, len(asset_ids), chunk_size):
+        chunk = asset_ids[start:start + chunk_size]
+        placeholders = ",".join("?" * len(chunk))
+        tag_rows = conn.execute(
+            f"""SELECT at.asset_id, t.name FROM asset_tags at
+                JOIN tags t ON t.id = at.tag_id
+                WHERE at.asset_id IN ({placeholders})
+                ORDER BY t.name""",
+            chunk,
+        ).fetchall()
+        for tr in tag_rows:
+            by_id.setdefault(tr["asset_id"], []).append(tr["name"])
 
     out: list[dict] = []
     for r in rows:

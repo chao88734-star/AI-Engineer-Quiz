@@ -371,3 +371,53 @@ def test_mutate_then_query_reflects_changes(client):
     r5 = client.get("/api/assets/export.csv", params={"q": "RENAMED"})
     rows = list(csv.DictReader(io.StringIO(r5.content.decode("utf-8-sig"))))
     assert any(row["uuid"] == uuid for row in rows)
+
+    # Tag add -> query and export both include the asset under the new tag
+    tag = "quiz-added"
+    r6 = client.post(f"/api/assets/{uuid}/tags", json={"name": tag})
+    assert r6.status_code == 200
+    r7 = client.get("/api/assets", params={"tags": [tag]})
+    assert any(i["uuid"] == uuid for i in r7.json()["items"])
+    r8 = client.get("/api/assets/export.csv", params={"tags": [tag]})
+    tag_rows = list(csv.DictReader(io.StringIO(r8.content.decode("utf-8-sig"))))
+    assert any(row["uuid"] == uuid and tag in row["tags"] for row in tag_rows)
+
+    # Tag remove -> query and export no longer match the asset under that tag
+    r9 = client.delete(f"/api/assets/{uuid}/tags/{tag}")
+    assert r9.status_code == 200
+    r10 = client.get("/api/assets", params={"tags": [tag]})
+    assert r10.json()["total"] == 0
+    r11 = client.get("/api/assets/export.csv", params={"tags": [tag]})
+    remaining = list(csv.DictReader(io.StringIO(r11.content.decode("utf-8-sig"))))
+    assert remaining == []
+
+
+# ---------- test 11: large export crosses the SQLite bind-variable limit ----------
+def test_large_export_survives_sqlite_variable_limit(client):
+    import uuid as uuidlib
+
+    conn = get_conn()
+    bulk_tag = "bulk-export"
+    conn.execute("INSERT OR IGNORE INTO tags (name) VALUES (?)", (bulk_tag,))
+    tid = conn.execute("SELECT id FROM tags WHERE name=?", (bulk_tag,)).fetchone()["id"]
+    n = 1200  # > 999 (older SQLite limit), also > the 500-row chunk size
+    now = "2026-10-08T00:00:00+00:00"
+    with conn:
+        for i in range(n):
+            cur = conn.execute(
+                "INSERT INTO assets (uuid, sha256, filename, media_type, ext, size, title, "
+                "status, storage_key, created_at, updated_at) "
+                "VALUES (?,?,?,?,?,?,?, 'active', ?,?,?)",
+                (str(uuidlib.uuid4()), f"bulk-sha-{i}", f"bulk_{i}.jpg", "image", "jpg",
+                 1, f"Bulk Export {i}", f"bulk-{i}", now, now),
+            )
+            conn.execute(
+                "INSERT OR IGNORE INTO asset_tags (asset_id, tag_id, source) VALUES (?,?,?)",
+                (cur.lastrowid, tid, "manual"),
+            )
+
+    r = client.get("/api/assets/export.csv", params={"tags": [bulk_tag]})
+    assert r.status_code == 200
+    rows = list(csv.DictReader(io.StringIO(r.content.decode("utf-8-sig"))))
+    assert len(rows) == n
+    assert all(bulk_tag in row["tags"] for row in rows)

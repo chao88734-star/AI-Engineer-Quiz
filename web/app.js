@@ -19,7 +19,11 @@ const state = {
 async function api(path, opts = {}) {
   const headers = opts.headers || {};
   if (state.token) headers["Authorization"] = "Bearer " + state.token;
-  if (opts.json) { headers["Content-Type"] = "application/json"; opts.body = JSON.stringify(opts.json); }
+  if (opts.json) {
+    headers["Content-Type"] = "application/json";
+    opts.body = JSON.stringify(opts.json);
+    if (!opts.method) opts.method = "POST";
+  }
   const res = await fetch(path, { ...opts, headers });
   if (res.status === 401) { logout(); throw new Error("unauthorised"); }
   if (!res.ok) { const t = await res.text(); throw new Error(t || res.statusText); }
@@ -69,7 +73,12 @@ $$(".nav-item").forEach(btn => btn.addEventListener("click", () => {
 }));
 
 // ---------- filter bar bindings ----------
+let filterBarBound = false;
 function bindFilterBar() {
+  // Bind once: enterApp() runs again after logout/login, and re-binding
+  // would stack duplicate listeners (one click firing several requests).
+  if (filterBarBound) return;
+  filterBarBound = true;
   // Sort
   $("#sort").addEventListener("change", (e) => { state.sort = e.target.value; state.page = 1; loadLibrary(); });
   // Search box (debounced)
@@ -130,8 +139,9 @@ async function loadCollectionsIntoFilter() {
 function addIncludeTag(t) {
   if (!t) return;
   const low = t.toLowerCase();
-  if (state.exclude_tags.includes(low)) { toast(`Tag "${low}" is already in exclude`, "err"); return; }
   if (state.tags.includes(low)) return;
+  // Deliberately allowed to also be in exclude_tags: include AND exclude of
+  // the same tag is a valid (empty) query the backend supports.
   state.tags.push(low);
   state.page = 1;
   loadLibrary();
@@ -139,8 +149,8 @@ function addIncludeTag(t) {
 function addExcludeTag(t) {
   if (!t) return;
   const low = t.toLowerCase();
-  if (state.tags.includes(low)) { toast(`Tag "${low}" is already in include`, "err"); return; }
   if (state.exclude_tags.includes(low)) return;
+  // See addIncludeTag: overlapping include/exclude is legal and yields empty.
   state.exclude_tags.push(low);
   state.page = 1;
   loadLibrary();
@@ -181,10 +191,15 @@ async function loadLibrary() {
   state.exclude_tags.forEach(t => p.append("exclude_tags", t));
   if (state.collection) p.set("collection_id", state.collection);
 
+  // Stale-response guard: a request that started before the latest one must
+  // not touch the UI, whether it succeeds or fails.
+  const isStale = () => mySeq !== state.reqSeq;
+
   let data;
   try {
     data = await api("/api/assets?" + p.toString());
   } catch (err) {
+    if (isStale()) return;
     if (err.message === "unauthorised") return;
     toast("Load failed: " + (err.message || "unknown"), "err");
     $("#grid").innerHTML = "";
@@ -194,8 +209,7 @@ async function loadLibrary() {
     return;
   }
 
-  // Stale-response guard
-  if (mySeq !== state.reqSeq) return;
+  if (isStale()) return;
 
   renderFacets(data.facets);
   renderGrid(data.items, data.total);
@@ -364,11 +378,13 @@ async function openAsset(uuid) {
     $("#tag-add")?.addEventListener("keydown", async (e) => {
       if (e.key === "Enter" && e.target.value.trim()) {
         await api("/api/assets/"+uuid+"/tags", { json: { name: e.target.value.trim() } });
+        loadLibrary();
         openAsset(uuid);
       }
     });
     $$("#tag-row .rm").forEach(rm => rm.addEventListener("click", async () => {
       await api("/api/assets/"+uuid+"/tags/"+encodeURIComponent(rm.dataset.tag), { method: "DELETE" });
+      loadLibrary();
       openAsset(uuid);
     }));
     $("#d-share")?.addEventListener("click", async () => {
